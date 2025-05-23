@@ -196,4 +196,3 @@ class PMMInventoryShift(ScriptStrategyBase):
         lines.extend(["    " + line for line in candles_df.tail().iloc[::-1].to_string(index=False).split("\n")])
 
         return "\n".join(lines)
-    

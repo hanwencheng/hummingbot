@@ -26,12 +26,13 @@ class HEITradingStrategy(ScriptStrategyBase):
     maker_pair = "HEI-BTC"
     taker_pair = "HEI-USDT"
     eth_pair = "ETH-USDT"
+    btc_pair = "BTC-USDT"
 
     # Order configuration
     order_refresh_time = 5  # Update every 5 seconds
     order_levels = 5  # 5 levels of orders on each side
-    base_order_amount = 5  # Base HEI amount per level
-    order_amount_scaling = 1.5  # Each level increases by 50%
+    base_order_amount = 50  # Base HEI amount per level
+    order_amount_scaling = 1.2  # Each level increases by 50%
 
     # Spread configuration (in basis points)
     base_bid_spread = 20  # 0.1%
@@ -91,7 +92,7 @@ class HEITradingStrategy(ScriptStrategyBase):
         # Track filled orders for arbitrage
         self.pending_hedges = []
 
-    markets = {exchange: {maker_pair, taker_pair, eth_pair}}
+    markets = {exchange: {maker_pair, taker_pair, eth_pair, btc_pair}}
 
     def on_stop(self):
         """Stop candles when strategy stops"""
@@ -178,14 +179,21 @@ class HEITradingStrategy(ScriptStrategyBase):
 
             # Calculate prices - match best bid/ask for first level
             if level == 0:
-                # First level matches best bid/ask
-                buy_price = best_bid
-                sell_price = best_ask
-            else:
-                # Other levels use spreads from reference
                 ref_price = self.connectors[self.exchange].get_price_by_type(self.maker_pair, self.price_source)
-                buy_price = ref_price * (Decimal("1") - level_bid_spread)
-                sell_price = ref_price * (Decimal("1") + level_ask_spread)
+                target_buy_price = ref_price * (Decimal("1") - level_bid_spread)
+                target_sell_price = ref_price * (Decimal("1") + level_ask_spread)
+
+                # Log the best price and target price
+                self.logger().info(f"Best Bid: {best_bid}, Best Ask: {best_ask}")
+                self.logger().info(f"Target Buy Price: {target_buy_price}, Target Sell Price: {target_sell_price}")
+
+                # First level matches best bid/ask
+                buy_price = max(best_bid, target_buy_price)
+                sell_price = min(best_ask, target_sell_price)
+            else:
+                # Other levels use spreads from the last level plus spread
+                buy_price = buy_orders[-1].price * (Decimal("1") - level_bid_spread)
+                sell_price = sell_orders[-1].price * (Decimal("1") + level_ask_spread)
 
             # Create order candidates
             buy_order = OrderCandidate(
@@ -234,7 +242,7 @@ class HEITradingStrategy(ScriptStrategyBase):
             hei_usdt_ask = self.connectors[self.exchange].get_price(self.taker_pair, True)
 
             # Get BTC/USDT price for conversion
-            btc_usdt = self.connectors[self.exchange].get_price_by_type("BTC-USDT", PriceType.MidPrice)
+            btc_usdt = self.connectors[self.exchange].get_price_by_type(self.btc_pair, PriceType.MidPrice)
 
             # Convert HEI/BTC prices to USDT equivalent
             hei_btc_bid_usdt = hei_btc_bid * btc_usdt
