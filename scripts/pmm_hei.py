@@ -16,7 +16,7 @@ class HEITradingStrategy(ScriptStrategyBase):
     """
     Advanced HEI Trading Strategy combining:
     1. 5-level market making on HEI/BTC
-    2. RSI-based trend adjustments using ETH/USDT
+    2. RSI-based trend adjustments using BTC/USDT
     3. Cross-exchange arbitrage between HEI/BTC and HEI/USDT
     4. Volume boosting with minimal price impact
     """
@@ -25,7 +25,6 @@ class HEITradingStrategy(ScriptStrategyBase):
     exchange = "binance"  # Real Binance exchange
     maker_pair = "HEI-BTC"
     taker_pair = "HEI-USDT"
-    eth_pair = "ETH-USDT"
     btc_pair = "BTC-USDT"
 
     # Order configuration
@@ -56,7 +55,7 @@ class HEITradingStrategy(ScriptStrategyBase):
 
     # Candles configuration
     candles_interval = "1s"  # 1 second candles for best bid/ask tracking
-    eth_candles_interval = "1m"  # 1 minute for ETH RSI
+    btc_candles_interval = "1m"  # 1 minute for BTC RSI
     max_records = 1000
 
     # Internal state
@@ -75,27 +74,27 @@ class HEITradingStrategy(ScriptStrategyBase):
             )
         )
 
-        # Initialize candles for ETH/USDT (1m for RSI)
-        self.eth_candles = CandlesFactory.get_candle(
+        # Initialize candles for BTC/USDT (1m for RSI)
+        self.btc_candles = CandlesFactory.get_candle(
             CandlesConfig(
                 connector=self.exchange,
-                trading_pair=self.eth_pair,
-                interval=self.eth_candles_interval,
+                trading_pair=self.btc_pair,
+                interval=self.btc_candles_interval,
                 max_records=self.max_records
             )
         )
 
         # Start candles
         self.hei_candles.start()
-        self.eth_candles.start()
+        self.btc_candles.start()
 
-    markets = {exchange: {maker_pair, taker_pair, eth_pair, btc_pair}}
+    markets = {exchange: {maker_pair, taker_pair, btc_pair}}
 
     async def on_stop(self):
         """Stop strategy and clean up"""
         # Stop candles
         self.hei_candles.stop()
-        self.eth_candles.stop()
+        self.btc_candles.stop()
 
         self.logger().info("HEI Trading Strategy stopped and cleaned up")
 
@@ -113,10 +112,10 @@ class HEITradingStrategy(ScriptStrategyBase):
             self.place_orders(proposal_adjusted)
             self.create_timestamp = self.order_refresh_time + self.current_timestamp
 
-    def get_eth_rsi(self) -> Optional[float]:
-        """Calculate RSI for ETH/USDT"""
+    def get_btc_rsi(self) -> Optional[float]:
+        """Calculate RSI for BTC/USDT"""
         try:
-            candles_df = self.eth_candles.candles_df
+            candles_df = self.btc_candles.candles_df
             if len(candles_df) < self.rsi_period + 1:
                 return None
 
@@ -133,15 +132,15 @@ class HEITradingStrategy(ScriptStrategyBase):
         ask_spread = self.base_ask_spread / 10000
 
         # Adjust based on RSI
-        rsi = self.get_eth_rsi()
+        rsi = self.get_btc_rsi()
         if rsi is not None:
             if rsi > 50:  # Bullish market
-                # Increase bid spread (buy lower) when market is bullish
-                bid_spread *= self.rsi_adjustment_factor
+                # Increase bid spread (buy lower) when BTC is bullish
+                bid_spread *= 0.6
                 # Keep ask spread unchanged to accumulate HEI
             elif rsi < 50:  # Bearish market
-                # More aggressive buying in bearish conditions
-                bid_spread *= 0.6
+                # More aggressive buying in BTC bullish conditions
+                bid_spread *= self.rsi_adjustment_factor
 
         return Decimal(str(bid_spread)), Decimal(str(ask_spread))
 
@@ -322,10 +321,10 @@ class HEITradingStrategy(ScriptStrategyBase):
             lines.append("  HEI Selling Price: Unable to fetch price")
 
         # RSI Status
-        rsi = self.get_eth_rsi()
+        rsi = self.get_btc_rsi()
         if rsi is not None:
             rsi_status = "🔴 Overbought" if rsi > self.rsi_overbought else "🟢 Oversold" if rsi < self.rsi_oversold else "🟡 Neutral"
-            lines.append(f"  ETH/USDT RSI: {rsi:.2f} {rsi_status}")
+            lines.append(f"  BTC/USDT RSI: {rsi:.2f} {rsi_status}")
 
         # Spread Adjustments
         base_bid_spread, base_ask_spread = self.get_adjusted_spreads()
@@ -425,13 +424,13 @@ class HEITradingStrategy(ScriptStrategyBase):
         ])
 
         # Candle Data (Recent)
-        lines.extend(["\n📊 RECENT CANDLES (ETH/USDT for RSI):"])
+        lines.extend(["\n📊 RECENT CANDLES (BTC/USDT for RSI):"])
         try:
-            eth_df = self.eth_candles.candles_df.tail(5)
-            if not eth_df.empty:
-                eth_df['time'] = pd.to_datetime(eth_df['timestamp'], unit='ms').dt.strftime('%H:%M:%S')
-                eth_df_display = eth_df[['time', 'open', 'high', 'low', 'close', 'volume']].round(2)
-                for line in eth_df_display.to_string(index=False).split("\n"):
+            btc_df = self.btc_candles.candles_df.tail(5)
+            if not btc_df.empty:
+                btc_df['time'] = pd.to_datetime(btc_df['timestamp'], unit='ms').dt.strftime('%H:%M:%S')
+                btc_df_display = btc_df[['time', 'open', 'high', 'low', 'close', 'volume']].round(2)
+                for line in btc_df_display.to_string(index=False).split("\n"):
                     lines.append("  " + line)
             else:
                 lines.append("  No candle data available")
