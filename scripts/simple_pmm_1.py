@@ -45,11 +45,6 @@ class SimplePMM(ScriptStrategyBase):
     create_timestamp = 0
     price_source = PriceType.MidPrice
 
-    @classmethod
-    def init_markets(cls, config: SimplePMMConfig):
-        cls.markets = {config.exchange: {config.trading_pair}}
-        cls.price_source = PriceType.LastTrade if config.price_type == "last" else PriceType.MidPrice
-
     def __init__(self, connectors: Dict[str, ConnectorBase], config: SimplePMMConfig):
         super().__init__(connectors)
         self.config = config

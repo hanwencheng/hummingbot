@@ -29,7 +29,7 @@ class HEITradingStrategy(ScriptStrategyBase):
     btc_pair = "BTC-USDT"
 
     # Order configuration
-    order_refresh_time = 5  # Update every 5 seconds
+    order_refresh_time = 10  # Update every 5 seconds
     order_levels = 5  # 5 levels of orders on each side
     base_order_amount = 50  # Base HEI amount per level
     order_amount_scaling = 1.2  # Each level increases by 50%
@@ -60,7 +60,7 @@ class HEITradingStrategy(ScriptStrategyBase):
     # Internal state
     create_timestamp = 0
     last_arb_check = 0
-    arb_check_interval = 10  # Check arbitrage every 2 seconds
+    arb_check_interval = 2  # Check arbitrage every 2 seconds
 
     def __init__(self, connectors: Dict[str, ConnectorBase]):
         super().__init__(connectors)
@@ -94,13 +94,23 @@ class HEITradingStrategy(ScriptStrategyBase):
 
     markets = {exchange: {maker_pair, taker_pair, eth_pair, btc_pair}}
 
-    def on_stop(self):
-        """Stop candles when strategy stops"""
+    async def on_stop(self):
+        """Stop strategy and clean up"""
+        # Stop candles
         self.hei_candles.stop()
         self.eth_candles.stop()
 
+        # Clear pending hedges
+        self.pending_hedges.clear()
+
+        self.logger().info("HEI Trading Strategy stopped and cleaned up")
+
     def on_tick(self):
         """Main strategy logic executed on each tick"""
+        # Check if strategy is ready to trade
+        if not self.ready_to_trade:
+            return
+
         # Update market making orders
         if self.create_timestamp <= self.current_timestamp:
             self.cancel_all_orders()
@@ -163,6 +173,10 @@ class HEITradingStrategy(ScriptStrategyBase):
 
     def create_proposal(self) -> List[OrderCandidate]:
         """Create order proposal with 5 levels on both sides"""
+        # Return empty list if not ready to trade
+        if not self.ready_to_trade:
+            return []
+
         best_bid, best_ask = self.get_best_prices()
         base_bid_spread, base_ask_spread = self.get_adjusted_spreads()
 
@@ -232,6 +246,10 @@ class HEITradingStrategy(ScriptStrategyBase):
 
     def check_arbitrage_opportunity(self):
         """Check for arbitrage opportunities between HEI/BTC and HEI/USDT"""
+        # Skip if not ready to trade
+        if not self.ready_to_trade:
+            return
+
         try:
             # Get HEI/BTC prices
             hei_btc_bid = self.connectors[self.exchange].get_price(self.maker_pair, False)
@@ -285,6 +303,11 @@ class HEITradingStrategy(ScriptStrategyBase):
 
     def process_pending_hedges(self):
         """Process pending hedge orders from arbitrage"""
+        # Skip if not ready to trade
+        if not self.ready_to_trade:
+            self.pending_hedges.clear()
+            return
+
         completed_hedges = []
 
         for hedge in self.pending_hedges:
