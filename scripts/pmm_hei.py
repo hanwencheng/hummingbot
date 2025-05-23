@@ -29,10 +29,11 @@ class HEITradingStrategy(ScriptStrategyBase):
     btc_pair = "BTC-USDT"
 
     # Order configuration
-    order_refresh_time = 10  # Update every 5 seconds
+    order_refresh_time = 20  # Update every 5 seconds
     order_levels = 5  # 5 levels of orders on each side
-    base_order_amount = 50  # Base HEI amount per level
+    base_order_amount = 100  # Base HEI amount per level
     order_amount_scaling = 1.2  # Each level increases by 50%
+    sell_order_scalar = 1.5
 
     # Spread configuration (in basis points)
     base_bid_spread = 20  # 0.1%
@@ -192,7 +193,7 @@ class HEITradingStrategy(ScriptStrategyBase):
             else:
                 # Other levels use spreads from the last level plus spread
                 buy_price = buy_orders[-1].price * (Decimal("1") - level_bid_spread)
-                sell_price = sell_orders[-1].price * (Decimal("1") + level_ask_spread)
+                sell_price = sell_orders[-1].price * (Decimal("1") + level_ask_spread * Decimal(str(self.sell_order_scalar)))
 
             # Create order candidates
             buy_order = OrderCandidate(
