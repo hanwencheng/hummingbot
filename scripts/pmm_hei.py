@@ -48,9 +48,10 @@ class HEITradingStrategy(ScriptStrategyBase):
     # Arbitrage configuration
     min_arb_spread = 20  # Minimum 0.2% spread for arbitrage
     arb_order_amount = 100  # HEI amount for arbitrage trades
+    arbitrage_threshold = 40
 
     # Price source
-    price_source = PriceType.MidPrice
+    price_source = PriceType.LastTrade
 
     # Candles configuration
     candles_interval = "1s"  # 1 second candles for best bid/ask tracking
@@ -59,8 +60,6 @@ class HEITradingStrategy(ScriptStrategyBase):
 
     # Internal state
     create_timestamp = 0
-    last_arb_check = 0
-    arb_check_interval = 2  # Check arbitrage every 2 seconds
 
     def __init__(self, connectors: Dict[str, ConnectorBase]):
         super().__init__(connectors)
@@ -89,9 +88,6 @@ class HEITradingStrategy(ScriptStrategyBase):
         self.hei_candles.start()
         self.eth_candles.start()
 
-        # Track filled orders for arbitrage
-        self.pending_hedges = []
-
     markets = {exchange: {maker_pair, taker_pair, eth_pair, btc_pair}}
 
     async def on_stop(self):
@@ -99,9 +95,6 @@ class HEITradingStrategy(ScriptStrategyBase):
         # Stop candles
         self.hei_candles.stop()
         self.eth_candles.stop()
-
-        # Clear pending hedges
-        self.pending_hedges.clear()
 
         self.logger().info("HEI Trading Strategy stopped and cleaned up")
 
@@ -118,14 +111,6 @@ class HEITradingStrategy(ScriptStrategyBase):
             proposal_adjusted: List[OrderCandidate] = self.adjust_proposal_to_budget(proposal)
             self.place_orders(proposal_adjusted)
             self.create_timestamp = self.order_refresh_time + self.current_timestamp
-
-        # Check for arbitrage opportunities
-        if self.last_arb_check + self.arb_check_interval <= self.current_timestamp:
-            self.check_arbitrage_opportunity()
-            self.last_arb_check = self.current_timestamp
-
-        # Process pending hedges
-        self.process_pending_hedges()
 
     def get_eth_rsi(self) -> Optional[float]:
         """Calculate RSI for ETH/USDT"""
@@ -202,8 +187,8 @@ class HEITradingStrategy(ScriptStrategyBase):
                 self.logger().info(f"Target Buy Price: {target_buy_price}, Target Sell Price: {target_sell_price}")
 
                 # First level matches best bid/ask
-                buy_price = max(best_bid, target_buy_price)
-                sell_price = min(best_ask, target_sell_price)
+                buy_price = min(best_bid, target_buy_price)
+                sell_price = max(best_ask, target_sell_price)
             else:
                 # Other levels use spreads from the last level plus spread
                 buy_price = buy_orders[-1].price * (Decimal("1") - level_bid_spread)
@@ -244,84 +229,7 @@ class HEITradingStrategy(ScriptStrategyBase):
             if order.amount > 0:
                 self.place_order(connector_name=self.exchange, order=order)
 
-    def check_arbitrage_opportunity(self):
-        """Check for arbitrage opportunities between HEI/BTC and HEI/USDT"""
-        # Skip if not ready to trade
-        if not self.ready_to_trade:
-            return
 
-        try:
-            # Get HEI/BTC prices
-            hei_btc_bid = self.connectors[self.exchange].get_price(self.maker_pair, False)
-            hei_btc_ask = self.connectors[self.exchange].get_price(self.maker_pair, True)
-
-            # Get HEI/USDT prices
-            hei_usdt_bid = self.connectors[self.exchange].get_price(self.taker_pair, False)
-            hei_usdt_ask = self.connectors[self.exchange].get_price(self.taker_pair, True)
-
-            # Get BTC/USDT price for conversion
-            btc_usdt = self.connectors[self.exchange].get_price_by_type(self.btc_pair, PriceType.MidPrice)
-
-            # Convert HEI/BTC prices to USDT equivalent
-            hei_btc_bid_usdt = hei_btc_bid * btc_usdt
-            hei_btc_ask_usdt = hei_btc_ask * btc_usdt
-
-            # Check arbitrage: Buy HEI/USDT, Sell HEI/BTC
-            arb_spread_1 = (hei_btc_bid_usdt - hei_usdt_ask) / hei_usdt_ask * 10000  # in bps
-
-            # Check arbitrage: Buy HEI/BTC, Sell HEI/USDT
-            arb_spread_2 = (hei_usdt_bid - hei_btc_ask_usdt) / hei_btc_ask_usdt * 10000  # in bps
-
-            if arb_spread_1 > self.min_arb_spread:
-                self.logger().info(f"Arbitrage opportunity: Buy HEI/USDT at {hei_usdt_ask}, Sell HEI/BTC at {hei_btc_bid} (equiv {hei_btc_bid_usdt})")
-                self.execute_arbitrage(TradeType.BUY, self.taker_pair, TradeType.SELL, self.maker_pair)
-
-            elif arb_spread_2 > self.min_arb_spread:
-                self.logger().info(f"Arbitrage opportunity: Buy HEI/BTC at {hei_btc_ask} (equiv {hei_btc_ask_usdt}), Sell HEI/USDT at {hei_usdt_bid}")
-                self.execute_arbitrage(TradeType.BUY, self.maker_pair, TradeType.SELL, self.taker_pair)
-
-        except Exception as e:
-            self.logger().error(f"Error checking arbitrage: {e}")
-
-    def execute_arbitrage(self, side1: TradeType, pair1: str, side2: TradeType, pair2: str):
-        """Execute arbitrage trade"""
-        amount = Decimal(str(self.arb_order_amount))
-
-        # Place first order (taker)
-        if side1 == TradeType.BUY:
-            self.buy(self.exchange, pair1, amount, OrderType.MARKET)
-        else:
-            self.sell(self.exchange, pair1, amount, OrderType.MARKET)
-
-        # Queue the hedge order
-        self.pending_hedges.append({
-            "side": side2,
-            "pair": pair2,
-            "amount": amount,
-            "timestamp": self.current_timestamp
-        })
-
-    def process_pending_hedges(self):
-        """Process pending hedge orders from arbitrage"""
-        # Skip if not ready to trade
-        if not self.ready_to_trade:
-            self.pending_hedges.clear()
-            return
-
-        completed_hedges = []
-
-        for hedge in self.pending_hedges:
-            # Wait a bit before placing hedge to ensure first order is filled
-            if self.current_timestamp - hedge["timestamp"] > 0.5:
-                if hedge["side"] == TradeType.BUY:
-                    self.buy(self.exchange, hedge["pair"], hedge["amount"], OrderType.MARKET)
-                else:
-                    self.sell(self.exchange, hedge["pair"], hedge["amount"], OrderType.MARKET)
-                completed_hedges.append(hedge)
-
-        # Remove completed hedges
-        for hedge in completed_hedges:
-            self.pending_hedges.remove(hedge)
 
     def place_order(self, connector_name: str, order: OrderCandidate):
         """Place an order"""
@@ -347,11 +255,42 @@ class HEITradingStrategy(ScriptStrategyBase):
         for order in self.get_active_orders(connector_name=self.exchange):
             self.cancel(self.exchange, order.trading_pair, order.client_order_id)
 
+    def is_active_maker_order(self, event: OrderFilledEvent):
+        """
+        Helper function that checks if order is an active order on the maker exchange
+        """
+        return event.trading_pair == self.maker_pair
+
+    def get_sell_price_in_usdt(self, event: OrderFilledEvent):
+        """Calculate the USD value of an order filled event."""
+        btc_usdt_price = self.connectors[self.exchange].get_price(self.btc_pair, PriceType.MidPrice)
+        return event.price * btc_usdt_price
+
     def did_fill_order(self, event: OrderFilledEvent):
-        """Handle filled orders"""
-        msg = f"{event.trade_type.name} {round(event.amount, 2)} {event.trading_pair} at {round(event.price, 8)}"
-        self.log_with_clock(logging.INFO, msg)
-        self.notify_hb_app_with_timestamp(msg)
+        """Handle filled orders and execute arbitrage"""
+        if event.trade_type == TradeType.BUY and self.is_active_maker_order(event):
+            self.logger().info(f"Filled maker buy order at price {event.price:.6f} for amount {event.amount:.2f}")
+            self.place_sell_order(self.config.taker_pair, event.amount)
+        else:
+            if event.trade_type == TradeType.SELL and self.is_active_maker_order(event):
+                self.logger().info(f"Filled maker sell order at price {event.price:.6f} for amount {event.amount:.2f}")
+                self.place_buy_order(self.config.taker_pair, event.amount)
+
+    def place_buy_taker_order(self, event: OrderFilledEvent, amount: Decimal, order_type: OrderType = OrderType.LIMIT):
+        buy_price = self.connectors[self.exchange].get_price_for_volume(self.taker_pair, True, amount)
+        is_profitable = (self.get_sell_price_in_usdt(event) - buy_price) / buy_price > self.arbitrage_threshold/10000
+        if is_profitable:
+            buy_order = OrderCandidate(self.taker_pair, is_maker=False, order_type=order_type, order_side=TradeType.BUY, amount=amount, price=buy_price)
+            buy_order_adjusted = self.connectors[self.exchange].budget_checker.adjust_candidate(buy_order, all_or_none=False)
+            self.buy(self.exchange, self.taker_pair, buy_order_adjusted.amount, buy_order_adjusted.order_type, buy_order_adjusted.price)
+
+    def place_sell_taker_order(self, event: OrderFilledEvent, amount: Decimal, order_type: OrderType = OrderType.LIMIT):
+        sell_price = self.connectors[self.exchange].get_price_for_volume(self.taker_pair, False, amount)
+        is_profitable = (sell_price - self.get_sell_price_in_usdt(event)) / sell_price > self.arbitrage_threshold/10000
+        if is_profitable:
+            sell_order = OrderCandidate(self.taker_pair, is_maker=False, order_type=order_type, order_side=TradeType.SELL, amount=amount, price=sell_price)
+            sell_order_adjusted = self.connectors[self.exchange].budget_checker.adjust_candidate(sell_order, all_or_none=False)
+            self.sell(self.exchange, self.taker_pair, sell_order_adjusted.amount, sell_order_adjusted.order_type, sell_order_adjusted.price)
 
     def format_status(self) -> str:
         """Format strategy status with comprehensive information"""
@@ -373,6 +312,13 @@ class HEITradingStrategy(ScriptStrategyBase):
 
         # Market Conditions
         lines.extend(["\n📈 MARKET CONDITIONS:"])
+
+        # HEI Selling Price
+        hei_selling_price = self.get_hei_selling_price(amount=Decimal("1"))
+        if hei_selling_price is not None:
+            lines.append(f"  HEI Selling Price for 1 HEI: {hei_selling_price:.6f} USDT")
+        else:
+            lines.append("  HEI Selling Price: Unable to fetch price")
 
         # RSI Status
         rsi = self.get_eth_rsi()
@@ -409,19 +355,35 @@ class HEITradingStrategy(ScriptStrategyBase):
                 f"    Spread: {(hei_usdt_ask - hei_usdt_bid) / hei_usdt_mid * 10000:.1f} bps"
             ])
 
-            # Arbitrage Opportunities
-            btc_usdt = self.connectors[self.exchange].get_price("BTC-USDT", PriceType.MidPrice)
-            hei_btc_bid_usdt = hei_btc_bid * btc_usdt
-            hei_btc_ask_usdt = hei_btc_ask * btc_usdt
+            # Calculate potential arbitrage spreads
+            try:
+                # Get HEI/BTC prices
+                hei_btc_bid = self.connectors[self.exchange].get_price(self.maker_pair, False)
+                hei_btc_ask = self.connectors[self.exchange].get_price(self.maker_pair, True)
 
-            arb_spread_1 = (hei_btc_bid_usdt - hei_usdt_ask) / hei_usdt_ask * 10000
-            arb_spread_2 = (hei_usdt_bid - hei_btc_ask_usdt) / hei_btc_ask_usdt * 10000
+                # Get HEI/USDT prices
+                hei_usdt_bid = self.connectors[self.exchange].get_price(self.taker_pair, False)
+                hei_usdt_ask = self.connectors[self.exchange].get_price(self.taker_pair, True)
 
-            lines.extend([
-                f"\n🔄 ARBITRAGE OPPORTUNITIES:",
-                f"  Buy USDT, Sell BTC: {arb_spread_1:.1f} bps {'✅' if arb_spread_1 > self.min_arb_spread else '❌'}",
-                f"  Buy BTC, Sell USDT: {arb_spread_2:.1f} bps {'✅' if arb_spread_2 > self.min_arb_spread else '❌'}"
-            ])
+                # Arbitrage Opportunities
+                btc_usdt = self.connectors[self.exchange].get_price("BTC-USDT", PriceType.MidPrice)
+                hei_btc_bid_usdt = hei_btc_bid * btc_usdt
+                hei_btc_ask_usdt = hei_btc_ask * btc_usdt
+
+                # Calculate spreads
+                # If we buy HEI/BTC and sell HEI/USDT (when our HEI/BTC buy order fills)
+                buy_btc_sell_usdt_spread = (hei_usdt_bid - hei_btc_ask_usdt) / hei_btc_ask_usdt * 10000
+
+                # If we sell HEI/BTC and buy HEI/USDT (when our HEI/BTC sell order fills)
+                sell_btc_buy_usdt_spread = (hei_btc_bid_usdt - hei_usdt_ask) / hei_usdt_ask * 10000
+
+                lines.extend([
+                    f"\n🔄 ARBITRAGE POTENTIAL (on maker fill):",
+                    f"  If BTC buy fills → Sell USDT: {buy_btc_sell_usdt_spread:.1f} bps {'✅' if buy_btc_sell_usdt_spread > 0 else '❌'}",
+                    f"  If BTC sell fills → Buy USDT: {sell_btc_buy_usdt_spread:.1f} bps {'✅' if sell_btc_buy_usdt_spread > 0 else '❌'}"
+                ])
+            except Exception as e:
+                lines.append(f"  Error calculating arbitrage: {e}")
         except Exception as e:
             lines.append(f"  Error getting prices: {e}")
 
@@ -458,9 +420,7 @@ class HEITradingStrategy(ScriptStrategyBase):
             f"\n⚙️  STRATEGY PARAMETERS:",
             f"  Order Levels: {self.order_levels}",
             f"  Base Amount: {self.base_order_amount} HEI",
-            f"  Refresh Time: {self.order_refresh_time}s",
-            f"  Arbitrage Amount: {self.arb_order_amount} HEI",
-            f"  Pending Hedges: {len(self.pending_hedges)}"
+            f"  Refresh Time: {self.order_refresh_time}s"
         ])
 
         # Candle Data (Recent)
