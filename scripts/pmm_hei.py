@@ -28,7 +28,7 @@ class HEITradingStrategy(ScriptStrategyBase):
     btc_pair = "BTC-USDT"
 
     # Order configuration
-    order_refresh_time = 20  # Update every 5 seconds
+    order_refresh_time = 30  # Update every 5 seconds
     order_levels = 5  # 5 levels of orders on each side
     base_order_amount = 100  # Base HEI amount per level
     order_amount_scaling = 1.2  # Each level increases by 50%
@@ -54,9 +54,9 @@ class HEITradingStrategy(ScriptStrategyBase):
     price_source = PriceType.LastTrade
 
     # Candles configuration
-    candles_interval = "1s"  # 1 second candles for best bid/ask tracking
+    candles_interval = "1m"  # 1 second candles for best bid/ask tracking
     btc_candles_interval = "1m"  # 1 minute for BTC RSI
-    max_records = 1000
+    max_records = 300
 
     # Internal state
     create_timestamp = 0
